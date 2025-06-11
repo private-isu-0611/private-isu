@@ -1,4 +1,3 @@
-ALP_BIN:=alp
 COMPETITION_IP:=35.78.68.97
 
 .PHONY: help bench cat-nginx-access vim-nginx-conf cat-nginx-sites vim-nginx-sites install-homebrew install-alp alp-json show-logs mysql mysql-desc show-slow-query restart-go restart-nginx restart-mysql restart-all
