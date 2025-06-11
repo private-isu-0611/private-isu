@@ -151,11 +151,35 @@ func getSessionUser(r *http.Request) User {
 		return User{}
 	}
 
-	u := User{}
+	// キャッシュキーを作成
+	cacheKey := fmt.Sprintf("user:%d", uid)
+	
+	// キャッシュから取得を試みる
+	item, err := memcacheClient.Get(cacheKey)
+	if err == nil {
+		// キャッシュヒット
+		u := User{}
+		err = json.Unmarshal(item.Value, &u)
+		if err == nil {
+			return u
+		}
+	}
 
-	err := db.Get(&u, "SELECT * FROM `users` WHERE `id` = ?", uid)
+	// キャッシュミスまたはデシリアライズ失敗の場合はDBから取得
+	u := User{}
+	err = db.Get(&u, "SELECT * FROM `users` WHERE `id` = ?", uid)
 	if err != nil {
 		return User{}
+	}
+
+	// キャッシュに保存（有効期限: 300秒）
+	data, err := json.Marshal(u)
+	if err == nil {
+		memcacheClient.Set(&memcache.Item{
+			Key:        cacheKey,
+			Value:      data,
+			Expiration: 300, // 5分
+		})
 	}
 
 	return u
@@ -220,20 +244,55 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 		userIDSet[c.UserID] = struct{}{}
 	}
 
-	// 3. 関連するユーザー情報を一括取得
+	// 3. 関連するユーザー情報を取得（キャッシュ活用）
 	userIDs := make([]int, 0, len(userIDSet))
 	for uid := range userIDSet {
 		userIDs = append(userIDs, uid)
 	}
-	var users []User
-	userQuery, args, _ := sqlx.In("SELECT * FROM users WHERE id IN (?)", userIDs)
-	userQuery = db.Rebind(userQuery)
-	if err := db.Select(&users, userQuery, args...); err != nil {
-		return nil, err
-	}
 	userMap := make(map[int]User)
-	for _, u := range users {
-		userMap[u.ID] = u
+	
+	// まずキャッシュから取得を試みる
+	uncachedUserIDs := []int{}
+	for _, uid := range userIDs {
+		cacheKey := fmt.Sprintf("user:%d", uid)
+		item, err := memcacheClient.Get(cacheKey)
+		if err == nil {
+			// キャッシュヒット
+			var u User
+			err = json.Unmarshal(item.Value, &u)
+			if err == nil {
+				userMap[uid] = u
+				continue
+			}
+		}
+		// キャッシュミスの場合はリストに追加
+		uncachedUserIDs = append(uncachedUserIDs, uid)
+	}
+	
+	// キャッシュにないユーザー情報をDBから一括取得
+	if len(uncachedUserIDs) > 0 {
+		var users []User
+		userQuery, args, _ := sqlx.In("SELECT * FROM users WHERE id IN (?)", uncachedUserIDs)
+		userQuery = db.Rebind(userQuery)
+		if err := db.Select(&users, userQuery, args...); err != nil {
+			return nil, err
+		}
+		
+		// 取得したユーザー情報をキャッシュに保存
+		for _, u := range users {
+			userMap[u.ID] = u
+			
+			// キャッシュに保存
+			cacheKey := fmt.Sprintf("user:%d", u.ID)
+			data, err := json.Marshal(u)
+			if err == nil {
+				memcacheClient.Set(&memcache.Item{
+					Key:        cacheKey,
+					Value:      data,
+					Expiration: 300, // 5分
+				})
+			}
+		}
 	}
 
 	// 4. 投稿データを構築
@@ -415,6 +474,8 @@ func postRegister(w http.ResponseWriter, r *http.Request) {
 	session.Values["csrf_token"] = secureRandomStr(16)
 	session.Save(r, w)
 
+	// 新規登録時はユーザーキャッシュは作成しない（次回取得時に作成される）
+
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
@@ -495,66 +556,110 @@ func getIndex(w http.ResponseWriter, r *http.Request) {
 
 func getAccountName(w http.ResponseWriter, r *http.Request) {
 	accountName := r.PathValue("accountName")
-	user := User{}
 
-	err := db.Get(&user, "SELECT * FROM `users` WHERE `account_name` = ? AND `del_flg` = 0", accountName)
-	if err != nil {
-		log.Print(err)
-		return
+	// キャッシュキーを作成
+	cacheKey := fmt.Sprintf("account:%s", accountName)
+
+	// キャッシュから取得を試みる
+	type accountPageData struct {
+		User           User   `json:"user"`
+		Posts          []Post `json:"posts"`
+		CommentCount   int    `json:"comment_count"`
+		PostCount      int    `json:"post_count"`
+		CommentedCount int    `json:"commented_count"`
 	}
 
-	if user.ID == 0 {
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}
+	item, err := memcacheClient.Get(cacheKey)
+	var data accountPageData
 
-	results := []Post{}
-
-	err = db.Select(&results, "SELECT `id`, `user_id`, `body`, `mime`, `created_at` FROM `posts` WHERE `user_id` = ? ORDER BY `created_at` DESC", user.ID)
-	if err != nil {
-		log.Print(err)
-		return
-	}
-
-	posts, err := makePosts(results, getCSRFToken(r), false)
-	if err != nil {
-		log.Print(err)
-		return
-	}
-
-	commentCount := 0
-	err = db.Get(&commentCount, "SELECT COUNT(*) AS count FROM `comments` WHERE `user_id` = ?", user.ID)
-	if err != nil {
-		log.Print(err)
-		return
-	}
-
-	postIDs := []int{}
-	err = db.Select(&postIDs, "SELECT `id` FROM `posts` WHERE `user_id` = ?", user.ID)
-	if err != nil {
-		log.Print(err)
-		return
-	}
-	postCount := len(postIDs)
-
-	commentedCount := 0
-	if postCount > 0 {
-		s := []string{}
-		for range postIDs {
-			s = append(s, "?")
+	if err == nil {
+		// キャッシュヒット
+		err = json.Unmarshal(item.Value, &data)
+		if err != nil {
+			log.Print("Failed to unmarshal cache:", err)
+			data = accountPageData{}
 		}
-		placeholder := strings.Join(s, ", ")
+	}
 
-		// convert []int -> []interface{}
-		args := make([]interface{}, len(postIDs))
-		for i, v := range postIDs {
-			args[i] = v
-		}
-
-		err = db.Get(&commentedCount, "SELECT COUNT(*) AS count FROM `comments` WHERE `post_id` IN ("+placeholder+")", args...)
+	if err != nil || data.User.ID == 0 {
+		// キャッシュミスまたはデシリアライズ失敗の場合はDBから取得
+		user := User{}
+		err := db.Get(&user, "SELECT * FROM `users` WHERE `account_name` = ? AND `del_flg` = 0", accountName)
 		if err != nil {
 			log.Print(err)
 			return
+		}
+
+		if user.ID == 0 {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		results := []Post{}
+		err = db.Select(&results, "SELECT `id`, `user_id`, `body`, `mime`, `created_at` FROM `posts` WHERE `user_id` = ? ORDER BY `created_at` DESC", user.ID)
+		if err != nil {
+			log.Print(err)
+			return
+		}
+
+		posts, err := makePosts(results, getCSRFToken(r), false)
+		if err != nil {
+			log.Print(err)
+			return
+		}
+
+		commentCount := 0
+		err = db.Get(&commentCount, "SELECT COUNT(*) AS count FROM `comments` WHERE `user_id` = ?", user.ID)
+		if err != nil {
+			log.Print(err)
+			return
+		}
+
+		postIDs := []int{}
+		err = db.Select(&postIDs, "SELECT `id` FROM `posts` WHERE `user_id` = ?", user.ID)
+		if err != nil {
+			log.Print(err)
+			return
+		}
+		postCount := len(postIDs)
+
+		commentedCount := 0
+		if postCount > 0 {
+			s := []string{}
+			for range postIDs {
+				s = append(s, "?")
+			}
+			placeholder := strings.Join(s, ", ")
+
+			// convert []int -> []interface{}
+			args := make([]interface{}, len(postIDs))
+			for i, v := range postIDs {
+				args[i] = v
+			}
+
+			err = db.Get(&commentedCount, "SELECT COUNT(*) AS count FROM `comments` WHERE `post_id` IN ("+placeholder+")", args...)
+			if err != nil {
+				log.Print(err)
+				return
+			}
+		}
+
+		data = accountPageData{
+			User:           user,
+			Posts:          posts,
+			CommentCount:   commentCount,
+			PostCount:      postCount,
+			CommentedCount: commentedCount,
+		}
+
+		// キャッシュに保存（有効期限: 60秒）
+		cacheData, err := json.Marshal(data)
+		if err == nil {
+			memcacheClient.Set(&memcache.Item{
+				Key:        cacheKey,
+				Value:      cacheData,
+				Expiration: 60, // 60秒
+			})
 		}
 	}
 
@@ -576,7 +681,7 @@ func getAccountName(w http.ResponseWriter, r *http.Request) {
 		CommentCount   int
 		CommentedCount int
 		Me             User
-	}{posts, user, postCount, commentCount, commentedCount, me})
+	}{data.Posts, data.User, data.PostCount, data.CommentCount, data.CommentedCount, me})
 }
 
 func getPosts(w http.ResponseWriter, r *http.Request) {
@@ -754,6 +859,9 @@ func postIndex(w http.ResponseWriter, r *http.Request) {
 
 	// キャッシュを無効化
 	memcacheClient.Delete("index_posts")
+	// 投稿したユーザーのアカウントページキャッシュも無効化
+	cacheKey := fmt.Sprintf("account:%s", me.AccountName)
+	memcacheClient.Delete(cacheKey)
 
 	http.Redirect(w, r, "/posts/"+strconv.FormatInt(pid, 10), http.StatusFound)
 }
@@ -857,6 +965,21 @@ func postComment(w http.ResponseWriter, r *http.Request) {
 
 	// キャッシュを無効化
 	memcacheClient.Delete("index_posts")
+	// コメントしたユーザーのアカウントページキャッシュも無効化
+	cacheKey := fmt.Sprintf("account:%s", me.AccountName)
+	memcacheClient.Delete(cacheKey)
+
+	// 投稿者のアカウントページキャッシュも無効化するため、投稿者情報を取得
+	var postUserID int
+	err = db.Get(&postUserID, "SELECT user_id FROM posts WHERE id = ?", postID)
+	if err == nil {
+		var postUserName string
+		err = db.Get(&postUserName, "SELECT account_name FROM users WHERE id = ?", postUserID)
+		if err == nil {
+			postUserCacheKey := fmt.Sprintf("account:%s", postUserName)
+			memcacheClient.Delete(postUserCacheKey)
+		}
+	}
 
 	http.Redirect(w, r, fmt.Sprintf("/posts/%d", postID), http.StatusFound)
 }
@@ -917,6 +1040,9 @@ func postAdminBanned(w http.ResponseWriter, r *http.Request) {
 
 	for _, id := range r.Form["uid[]"] {
 		db.Exec(query, 1, id)
+		// バンされたユーザーのキャッシュを削除
+		cacheKey := fmt.Sprintf("user:%s", id)
+		memcacheClient.Delete(cacheKey)
 	}
 
 	// キャッシュを無効化（ユーザーがバンされると投稿一覧が変わる可能性がある）
