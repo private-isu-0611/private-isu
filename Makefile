@@ -55,10 +55,10 @@ restart-go: ## Restart Go service
 	sudo systemctl restart isu-go.service
 
 restart-nginx: ## Restart nginx service
-	sudo systemctl restart nginx.service
+	sudo systemctl restart nginx
 
 restart-mysql: ## Restart MySQL service
-	sudo systemctl restart mysql.service
+	sudo systemctl restart mysql
 
 restart-all: ## Restart all services
 	sudo systemctl restart isu-go.service
