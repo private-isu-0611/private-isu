@@ -846,9 +846,9 @@ func main() {
 	r.Get("/admin/banned", getAdminBanned)
 	r.Post("/admin/banned", postAdminBanned)
 	r.Get(`/@{accountName:[a-zA-Z]+}`, getAccountName)
-	r.Get("/*", func(w http.ResponseWriter, r *http.Request) {
-		http.FileServer(http.Dir("../public")).ServeHTTP(w, r)
-	})
+	// r.Get("/*", func(w http.ResponseWriter, r *http.Request) {
+	// 	http.FileServer(http.Dir("../public")).ServeHTTP(w, r)
+	// })
 
 	log.Fatal(http.ListenAndServe(":8080", r))
 }
