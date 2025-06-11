@@ -1,4 +1,3 @@
-BENCHMARKER_BIN:=./bin/benchmarker
 ALP_BIN:=alp
 COMPETITION_IP:=35.78.68.97
 
@@ -8,7 +7,7 @@ help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'
 
 bench: ## Run benchmarker
-	$(BENCHMARKER_BIN) -u ./userdata -t http://$(COMPETITION_IP)
+	curl https://xnvvb925bl.execute-api.ap-northeast-1.amazonaws.com/
 
 # nginx
 cat-nginx-access: ## Show nginx access log
@@ -65,6 +64,3 @@ restart-all: ## Restart all services
 	sudo systemctl restart isu-go.service
 	sudo systemctl restart nginx.service
 	sudo systemctl restart mysql.service
-
-bench:
-	curl https://xnvvb925bl.execute-api.ap-northeast-1.amazonaws.com/
