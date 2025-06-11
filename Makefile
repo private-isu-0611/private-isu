@@ -65,3 +65,6 @@ restart-all: ## Restart all services
 	sudo systemctl restart isu-go.service
 	sudo systemctl restart nginx.service
 	sudo systemctl restart mysql.service
+
+bench:
+	curl https://xnvvb925bl.execute-api.ap-northeast-1.amazonaws.com/
