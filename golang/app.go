@@ -1026,19 +1026,32 @@ func postAdminBanned(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query := "UPDATE `users` SET `del_flg` = ? WHERE `id` = ?"
-
 	err := r.ParseForm()
 	if err != nil {
 		log.Print(err)
 		return
 	}
 
-	for _, id := range r.Form["uid[]"] {
-		db.Exec(query, 1, id)
-		// バンされたユーザーのキャッシュを削除
-		cacheKey := fmt.Sprintf("user:%s", id)
-		memcacheClient.Delete(cacheKey)
+	userIDs := r.Form["uid[]"]
+	if len(userIDs) > 0 {
+		// IN句を使った一括UPDATE
+		query, args, err := sqlx.In("UPDATE `users` SET `del_flg` = 1 WHERE `id` IN (?)", userIDs)
+		if err != nil {
+			log.Print(err)
+			return
+		}
+		query = db.Rebind(query)
+		_, err = db.Exec(query, args...)
+		if err != nil {
+			log.Print(err)
+			return
+		}
+
+		// バンされたユーザーのキャッシュを一括削除
+		for _, id := range userIDs {
+			cacheKey := fmt.Sprintf("user:%s", id)
+			memcacheClient.Delete(cacheKey)
+		}
 	}
 
 	// キャッシュを無効化（ユーザーがバンされると投稿一覧が変わる可能性がある）
