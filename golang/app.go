@@ -174,42 +174,84 @@ func getFlash(w http.ResponseWriter, r *http.Request, key string) string {
 
 func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, error) {
 	var posts []Post
+	if len(results) == 0 {
+		return posts, nil
+	}
 
+	// 投稿IDとユーザーIDを収集
+	postIDs := make([]int, len(results))
+	userIDSet := make(map[int]struct{})
+	for i, p := range results {
+		postIDs[i] = p.ID
+		userIDSet[p.UserID] = struct{}{}
+	}
+
+	// 1. 各投稿のコメント数を一括取得
+	type countRow struct {
+		PostID int `db:"post_id"`
+		Count  int `db:"count"`
+	}
+	var counts []countRow
+	countQuery, args, _ := sqlx.In(
+		"SELECT post_id, COUNT(*) AS count FROM comments WHERE post_id IN (?) GROUP BY post_id", postIDs,
+	)
+	countQuery = db.Rebind(countQuery)
+	if err := db.Select(&counts, countQuery, args...); err != nil {
+		return nil, err
+	}
+	commentCountMap := make(map[int]int)
+	for _, row := range counts {
+		commentCountMap[row.PostID] = row.Count
+	}
+
+	// 2. コメント本体を一括取得
+	var allCommentsList []Comment
+	commentQuery := "SELECT * FROM comments WHERE post_id IN (?) ORDER BY created_at DESC"
+	commentQuery, args, _ = sqlx.In(commentQuery, postIDs)
+	commentQuery = db.Rebind(commentQuery)
+	if err := db.Select(&allCommentsList, commentQuery, args...); err != nil {
+		return nil, err
+	}
+	commentsMap := make(map[int][]Comment)
+	for _, c := range allCommentsList {
+		commentsMap[c.PostID] = append(commentsMap[c.PostID], c)
+		userIDSet[c.UserID] = struct{}{}
+	}
+
+	// 3. 関連するユーザー情報を一括取得
+	userIDs := make([]int, 0, len(userIDSet))
+	for uid := range userIDSet {
+		userIDs = append(userIDs, uid)
+	}
+	var users []User
+	userQuery, args, _ := sqlx.In("SELECT * FROM users WHERE id IN (?)", userIDs)
+	userQuery = db.Rebind(userQuery)
+	if err := db.Select(&users, userQuery, args...); err != nil {
+		return nil, err
+	}
+	userMap := make(map[int]User)
+	for _, u := range users {
+		userMap[u.ID] = u
+	}
+
+	// 4. 投稿データを構築
 	for _, p := range results {
-		err := db.Get(&p.CommentCount, "SELECT COUNT(*) AS `count` FROM `comments` WHERE `post_id` = ?", p.ID)
-		if err != nil {
-			return nil, err
-		}
+		p.CommentCount = commentCountMap[p.ID]
 
-		query := "SELECT * FROM `comments` WHERE `post_id` = ? ORDER BY `created_at` DESC"
-		if !allComments {
-			query += " LIMIT 3"
+		comments := commentsMap[p.ID]
+		if !allComments && len(comments) > 3 {
+			comments = comments[:3]
 		}
-		var comments []Comment
-		err = db.Select(&comments, query, p.ID)
-		if err != nil {
-			return nil, err
+		for i := range comments {
+			comments[i].User = userMap[comments[i].UserID]
 		}
-
-		for i := 0; i < len(comments); i++ {
-			err := db.Get(&comments[i].User, "SELECT * FROM `users` WHERE `id` = ?", comments[i].UserID)
-			if err != nil {
-				return nil, err
-			}
-		}
-
 		// reverse
 		for i, j := 0, len(comments)-1; i < j; i, j = i+1, j-1 {
 			comments[i], comments[j] = comments[j], comments[i]
 		}
-
 		p.Comments = comments
 
-		err = db.Get(&p.User, "SELECT * FROM `users` WHERE `id` = ?", p.UserID)
-		if err != nil {
-			return nil, err
-		}
-
+		p.User = userMap[p.UserID]
 		p.CSRFToken = csrfToken
 
 		if p.User.DelFlg == 0 {
@@ -222,6 +264,7 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 
 	return posts, nil
 }
+
 
 func imageURL(p Post) string {
 	ext := ""
