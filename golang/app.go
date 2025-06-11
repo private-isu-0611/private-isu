@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	crand "crypto/rand"
 	"fmt"
 	"html/template"
@@ -716,9 +715,10 @@ func getImage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	post := Post{}
-	err = db.Get(&post, "SELECT * FROM `posts` WHERE `id` = ?", pid)
+	err = db.Get(&post, "SELECT `id`, `mime` FROM `posts` WHERE `id` = ?", pid)
 	if err != nil {
 		log.Print(err)
+		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 
@@ -728,23 +728,18 @@ func getImage(w http.ResponseWriter, r *http.Request) {
 		ext == "png" && post.Mime == "image/png" ||
 		ext == "gif" && post.Mime == "image/gif" {
 
-		// 静的ファイルとして保存
-		os.MkdirAll("../public/image", 0755)
+		// ファイルシステムから画像ファイルを読み込み
 		filePath := fmt.Sprintf("../public/image/%d.%s", pid, ext)
-		dst, err := os.Create(filePath)
+		imageData, err := os.ReadFile(filePath)
 		if err != nil {
 			log.Print(err)
-		} else {
-			defer dst.Close()
-			reader := bytes.NewReader(post.Imgdata)
-			io.Copy(dst, reader)
-			os.Remove(filePath)
-			os.Chmod(filePath, 0644)
+			w.WriteHeader(http.StatusNotFound)
+			return
 		}
 
 		// レスポンスとして返す
 		w.Header().Set("Content-Type", post.Mime)
-		_, err = w.Write(post.Imgdata)
+		_, err = w.Write(imageData)
 		if err != nil {
 			log.Print(err)
 			return
