@@ -2,6 +2,7 @@ package main
 
 import (
 	crand "crypto/rand"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"io"
@@ -26,8 +27,9 @@ import (
 )
 
 var (
-	db    *sqlx.DB
-	store *gsm.MemcacheStore
+	db             *sqlx.DB
+	store          *gsm.MemcacheStore
+	memcacheClient *memcache.Client
 )
 
 const (
@@ -72,7 +74,7 @@ func init() {
 	if memdAddr == "" {
 		memdAddr = "localhost:11211"
 	}
-	memcacheClient := memcache.New(memdAddr)
+	memcacheClient = memcache.New(memdAddr)
 	store = gsm.NewMemcacheStore(memcacheClient, "iscogram_", []byte("sendagaya"))
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 }
@@ -385,18 +387,50 @@ func getLogout(w http.ResponseWriter, r *http.Request) {
 func getIndex(w http.ResponseWriter, r *http.Request) {
 	me := getSessionUser(r)
 
-	results := []Post{}
+	// キャッシュキーを作成
+	cacheKey := "index_posts"
 
-	err := db.Select(&results, "SELECT `id`, `user_id`, `body`, `mime`, `created_at` FROM `posts` ORDER BY `created_at` DESC LIMIT 20")
-	if err != nil {
-		log.Print(err)
-		return
+	// キャッシュから取得を試みる
+	item, err := memcacheClient.Get(cacheKey)
+	var posts []Post
+
+	if err == nil {
+		// キャッシュヒット
+		err = json.Unmarshal(item.Value, &posts)
+		if err != nil {
+			log.Print("Failed to unmarshal cache:", err)
+			// キャッシュのデシリアライズに失敗した場合はDBから取得
+			posts = nil
+		}
 	}
+	
+	if err != nil || posts == nil {
+		// キャッシュミスまたはデシリアライズ失敗の場合はDBから取得
+		results := []Post{}
 
-	posts, err := makePosts(results, getCSRFToken(r), false)
-	if err != nil {
-		log.Print(err)
-		return
+		err := db.Select(&results, "SELECT `id`, `user_id`, `body`, `mime`, `created_at` FROM `posts` ORDER BY `created_at` DESC LIMIT 20")
+		if err != nil {
+			log.Print(err)
+			return
+		}
+
+		posts, err = makePosts(results, getCSRFToken(r), false)
+		if err != nil {
+			log.Print(err)
+			return
+		}
+
+		// キャッシュに保存（有効期限: 60秒）
+		if len(posts) > 0 {
+			data, err := json.Marshal(posts)
+			if err == nil {
+				memcacheClient.Set(&memcache.Item{
+					Key:        cacheKey,
+					Value:      data,
+					Expiration: 60, // 60秒
+				})
+			}
+		}
 	}
 
 	fmap := template.FuncMap{
@@ -675,6 +709,9 @@ func postIndex(w http.ResponseWriter, r *http.Request) {
 	// 画像を静的ファイルとして保存
 	saveStaticFile(int(pid), ext, file)
 
+	// キャッシュを無効化
+	memcacheClient.Delete("index_posts")
+
 	http.Redirect(w, r, "/posts/"+strconv.FormatInt(pid, 10), http.StatusFound)
 }
 
@@ -775,6 +812,9 @@ func postComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// キャッシュを無効化
+	memcacheClient.Delete("index_posts")
+
 	http.Redirect(w, r, fmt.Sprintf("/posts/%d", postID), http.StatusFound)
 }
 
@@ -835,6 +875,9 @@ func postAdminBanned(w http.ResponseWriter, r *http.Request) {
 	for _, id := range r.Form["uid[]"] {
 		db.Exec(query, 1, id)
 	}
+
+	// キャッシュを無効化（ユーザーがバンされると投稿一覧が変わる可能性がある）
+	memcacheClient.Delete("index_posts")
 
 	http.Redirect(w, r, "/admin/banned", http.StatusFound)
 }
