@@ -62,5 +62,5 @@ restart-mysql: ## Restart MySQL service
 
 restart-all: ## Restart all services
 	sudo systemctl restart isu-go.service
-	sudo systemctl restart nginx.service
-	sudo systemctl restart mysql.service
+	sudo systemctl restart nginx
+	sudo systemctl restart mysql
