@@ -347,8 +347,21 @@ func isLogin(u User) bool {
 func getCSRFToken(r *http.Request) string {
 	session := getSession(r)
 	csrfToken, ok := session.Values["csrf_token"]
-	if !ok {
+	if !ok || csrfToken == nil {
 		return ""
+	}
+	return csrfToken.(string)
+}
+
+func ensureCSRFToken(w http.ResponseWriter, r *http.Request) string {
+	session := getSession(r)
+	csrfToken, ok := session.Values["csrf_token"]
+	if !ok || csrfToken == nil {
+		// CSRFトークンが存在しない場合は新規生成
+		newToken := secureRandomStr(16)
+		session.Values["csrf_token"] = newToken
+		session.Save(r, w)
+		return newToken
 	}
 	return csrfToken.(string)
 }
@@ -507,7 +520,7 @@ func getIndex(w http.ResponseWriter, r *http.Request) {
 			posts = nil
 		} else {
 			// キャッシュヒットした場合、現在のCSRFトークンで更新
-			currentCSRFToken := getCSRFToken(r)
+			currentCSRFToken := ensureCSRFToken(w, r)
 			for i := range posts {
 				posts[i].CSRFToken = currentCSRFToken
 			}
@@ -524,7 +537,7 @@ func getIndex(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		posts, err = makePosts(results, getCSRFToken(r), false)
+		posts, err = makePosts(results, ensureCSRFToken(w, r), false)
 		if err != nil {
 			log.Print(err)
 			return
@@ -557,7 +570,7 @@ func getIndex(w http.ResponseWriter, r *http.Request) {
 		Me        User
 		CSRFToken string
 		Flash     string
-	}{posts, me, getCSRFToken(r), getFlash(w, r, "notice")})
+	}{posts, me, ensureCSRFToken(w, r), getFlash(w, r, "notice")})
 }
 
 func getAccountName(w http.ResponseWriter, r *http.Request) {
@@ -586,7 +599,7 @@ func getAccountName(w http.ResponseWriter, r *http.Request) {
 			data = accountPageData{}
 		} else {
 			// キャッシュヒットした場合、現在のCSRFトークンで更新
-			currentCSRFToken := getCSRFToken(r)
+			currentCSRFToken := ensureCSRFToken(w, r)
 			for i := range data.Posts {
 				data.Posts[i].CSRFToken = currentCSRFToken
 			}
@@ -614,7 +627,7 @@ func getAccountName(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		posts, err := makePosts(results, getCSRFToken(r), false)
+		posts, err := makePosts(results, ensureCSRFToken(w, r), false)
 		if err != nil {
 			log.Print(err)
 			return
@@ -721,7 +734,7 @@ func getPosts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	posts, err := makePosts(results, getCSRFToken(r), false)
+	posts, err := makePosts(results, ensureCSRFToken(w, r), false)
 	if err != nil {
 		log.Print(err)
 		return
@@ -757,7 +770,7 @@ func getPostsID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	posts, err := makePosts(results, getCSRFToken(r), true)
+	posts, err := makePosts(results, ensureCSRFToken(w, r), true)
 	if err != nil {
 		log.Print(err)
 		return
@@ -1018,7 +1031,7 @@ func getAdminBanned(w http.ResponseWriter, r *http.Request) {
 		Users     []User
 		Me        User
 		CSRFToken string
-	}{users, me, getCSRFToken(r)})
+	}{users, me, ensureCSRFToken(w, r)})
 }
 
 func postAdminBanned(w http.ResponseWriter, r *http.Request) {
