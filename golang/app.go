@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	crand "crypto/rand"
 	"fmt"
 	"html/template"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -613,16 +615,19 @@ func postIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mime := ""
+	mime, ext := "", ""
 	if file != nil {
 		// 投稿のContent-Typeからファイルのタイプを決定する
 		contentType := header.Header["Content-Type"][0]
 		if strings.Contains(contentType, "jpeg") {
 			mime = "image/jpeg"
+			ext = "jpg"
 		} else if strings.Contains(contentType, "png") {
 			mime = "image/png"
+			ext = "png"
 		} else if strings.Contains(contentType, "gif") {
 			mime = "image/gif"
+			ext = "gif"
 		} else {
 			session := getSession(r)
 			session.Values["notice"] = "投稿できる画像形式はjpgとpngとgifだけです"
@@ -633,13 +638,7 @@ func postIndex(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	filedata, err := io.ReadAll(file)
-	if err != nil {
-		log.Print(err)
-		return
-	}
-
-	if len(filedata) > UploadLimit {
+	if header.Size > UploadLimit {
 		session := getSession(r)
 		session.Values["notice"] = "ファイルサイズが大きすぎます"
 		session.Save(r, w)
@@ -649,11 +648,12 @@ func postIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	query := "INSERT INTO `posts` (`user_id`, `mime`, `imgdata`, `body`) VALUES (?,?,?,?)"
+	emptyImage := []byte{}
 	result, err := db.Exec(
 		query,
 		me.ID,
 		mime,
-		filedata,
+		emptyImage, // 静的ファイル配信のためNULLを設定
 		r.FormValue("body"),
 	)
 	if err != nil {
@@ -667,7 +667,38 @@ func postIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 画像を静的ファイルとして保存
+	saveStaticFile(int(pid), ext, file)
+
 	http.Redirect(w, r, "/posts/"+strconv.FormatInt(pid, 10), http.StatusFound)
+}
+
+func saveStaticFile(pid int, ext string, file multipart.File) {
+	os.MkdirAll("../public/image", 0755)
+	filePath := fmt.Sprintf("../public/image/%d.%s", pid, ext)
+
+	// ファイルを作成
+	dst, err := os.Create(filePath)
+	if err != nil {
+		log.Print(err)
+		return
+	}
+	defer dst.Close()
+
+	// ストリーミングコピー（メモリに全体を読み込まない）
+	_, err = io.Copy(dst, file)
+	if err != nil {
+		log.Print(err)
+		os.Remove(filePath) // エラー時はファイル削除
+		return
+	}
+
+	// ファイル権限設定
+	err = os.Chmod(filePath, 0644)
+	if err != nil {
+		log.Print(err)
+		return
+	}
 }
 
 func getImage(w http.ResponseWriter, r *http.Request) {
@@ -690,8 +721,24 @@ func getImage(w http.ResponseWriter, r *http.Request) {
 	if ext == "jpg" && post.Mime == "image/jpeg" ||
 		ext == "png" && post.Mime == "image/png" ||
 		ext == "gif" && post.Mime == "image/gif" {
+
+		// 静的ファイルとして保存
+		os.MkdirAll("../public/image", 0755)
+		filePath := fmt.Sprintf("../public/image/%d.%s", pid, ext)
+		dst, err := os.Create(filePath)
+		if err != nil {
+			log.Print(err)
+		} else {
+			defer dst.Close()
+			reader := bytes.NewReader(post.Imgdata)
+			io.Copy(dst, reader)
+			os.Remove(filePath)
+			os.Chmod(filePath, 0644)
+		}
+
+		// レスポンスとして返す
 		w.Header().Set("Content-Type", post.Mime)
-		_, err := w.Write(post.Imgdata)
+		_, err = w.Write(post.Imgdata)
 		if err != nil {
 			log.Print(err)
 			return
