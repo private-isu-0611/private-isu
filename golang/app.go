@@ -969,16 +969,12 @@ func postComment(w http.ResponseWriter, r *http.Request) {
 	cacheKey := fmt.Sprintf("account:%s", me.AccountName)
 	memcacheClient.Delete(cacheKey)
 
-	// 投稿者のアカウントページキャッシュも無効化するため、投稿者情報を取得
-	var postUserID int
-	err = db.Get(&postUserID, "SELECT user_id FROM posts WHERE id = ?", postID)
+	// 投稿者のアカウントページキャッシュも無効化するため、投稿者情報をJOINで一括取得
+	var postUserName string
+	err = db.Get(&postUserName, "SELECT u.account_name FROM posts p JOIN users u ON p.user_id = u.id WHERE p.id = ?", postID)
 	if err == nil {
-		var postUserName string
-		err = db.Get(&postUserName, "SELECT account_name FROM users WHERE id = ?", postUserID)
-		if err == nil {
-			postUserCacheKey := fmt.Sprintf("account:%s", postUserName)
-			memcacheClient.Delete(postUserCacheKey)
-		}
+		postUserCacheKey := fmt.Sprintf("account:%s", postUserName)
+		memcacheClient.Delete(postUserCacheKey)
 	}
 
 	http.Redirect(w, r, fmt.Sprintf("/posts/%d", postID), http.StatusFound)
