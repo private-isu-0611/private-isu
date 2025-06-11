@@ -505,6 +505,12 @@ func getIndex(w http.ResponseWriter, r *http.Request) {
 			log.Print("Failed to unmarshal cache:", err)
 			// キャッシュのデシリアライズに失敗した場合はDBから取得
 			posts = nil
+		} else {
+			// キャッシュヒットした場合、現在のCSRFトークンで更新
+			currentCSRFToken := getCSRFToken(r)
+			for i := range posts {
+				posts[i].CSRFToken = currentCSRFToken
+			}
 		}
 	}
 	
@@ -578,6 +584,12 @@ func getAccountName(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			log.Print("Failed to unmarshal cache:", err)
 			data = accountPageData{}
+		} else {
+			// キャッシュヒットした場合、現在のCSRFトークンで更新
+			currentCSRFToken := getCSRFToken(r)
+			for i := range data.Posts {
+				data.Posts[i].CSRFToken = currentCSRFToken
+			}
 		}
 	}
 
