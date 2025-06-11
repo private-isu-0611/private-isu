@@ -31,7 +31,7 @@ install-alp: ## Install alp via Homebrew
 	brew install alp
 
 alp-json: ## Run alp analysis on nginx logs
-	sudo cat /var/log/nginx/access.log | $(ALP_BIN) json \
+	sudo cat /var/log/nginx/access.log | alp json \
 		--sort sum -r \
 		-m "posts/[0-9+], /@\w+, /image/\d+" \
 		-o count,method,uri,min,avg,max,sum
